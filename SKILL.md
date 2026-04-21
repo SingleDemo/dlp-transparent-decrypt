@@ -18,7 +18,8 @@ dlp-transparent-decrypt/
 ├─ SKILL.md
 └─ scripts/
    ├─ read_encrypted.py       ← 核心库（Python API / CLI）
-   └─ batch_decrypt_keil.py   ← Keil 工程目录批量解密
+   ├─ batch_decrypt_keil.py   ← Keil 工程目录批量解密
+   └─ inplace_decrypt.py      ← 原地解密（解密后的工程被重新加密时用）
 ```
 
 ---
@@ -166,7 +167,29 @@ def read_via_cmd_type(src: str) -> str | None:
 
 ---
 
-## 四、内部工作流程
+## 四、原地解密（In-Place Decrypt）
+
+**场景**：解密后的工程放在 DLP 监控目录下，你修改了 .c/.h 文件保存后被重新加密。
+
+```powershell
+# 解密单个文件（原地覆盖）
+python scripts\inplace_decrypt.py D:\M10-Decrypted\...\rs485.c
+
+# 扫描整个工程，解密所有 DLP 加密文件
+python scripts\inplace_decrypt.py --scan D:\M10-Decrypted\ZR-M10-源APP-V1.01T-260316-刘笑-GPT5.4修改版
+
+# 解密指定目录
+python scripts\inplace_decrypt.py --dir D:\M10-Decrypted\...\HARDWARE --ext .c,.h
+```
+
+**特点**：
+- 保持原路径和文件名不变
+- 自动检测 DLP 加密文件（跳过未加密的）
+- GBK -> UTF-8-BOM 转换，Keil 兼容
+
+---
+
+## 五、内部工作流程
 
 ```
 read_encrypted_file(src)
