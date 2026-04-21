@@ -158,7 +158,7 @@ def main():
             if success:
                 try:
                     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                    with open(out_path, "w", encoding="utf-8", newline="\n") as f:
+                    with open(out_path, "w", encoding="utf-8-sig", newline="\n") as f:
                         f.write(data)
                     total_chars += len(data)
                     ok += 1

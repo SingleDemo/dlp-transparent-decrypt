@@ -208,7 +208,18 @@ read_encrypted_file(src)
 |------|------|
 | `AttributeError: module 'importlib' has no attribute 'util'` | 改用 `from importlib.util import spec_from_file_location` |
 | 成功率不是 100% | 检查 DLP 服务是否正常，确认目标目录不在 DLP 保护范围内 |
-| 解密后内容有乱码 | 自动检测编码失败，手动指定 encoding（如 `gbk`） |
+| 解密后中文注释乱码（`//����`） | 源文件是 GBK 编码，检测逻辑误判为 UTF-8 → 改用 GBK 检测或写 UTF-8-BOM |
+
+### 5.4 中文编码修复（2026-04-21）
+
+**问题**：M10 项目解密后，65 个含中文注释的 `.c/.h` 文件出现乱码。
+
+**根因**：Keil MDK 默认以 **GBK** 保存 `.c/.h` 文件，`cmd type` 输出的内容是 GBK 编码。`detect_encoding()` 的启发式判断（可打印字符比例）将 GBK 误判为 UTF-8，用 UTF-8 解码 GBK 字节导致乱码。
+
+**修复**：
+1. `read_encrypted.py` 的 `detect_encoding()` 增加 `is_source_file` 参数，`.c/.h/.s/.inc` 文件检测是否有 GBK 双字节特征（0x80-0xFF），有则用 GBK 解码
+2. 解密后统一写 **UTF-8-BOM**（`utf-8-sig`），Keil 5.29+ 和 VSCode 都能自动识别，兼容性最好
+3. 已有乱码文件：重新从加密源用 `cmd type` 读 → GBK 解码 → UTF-8-BOM 写入
 
 ---
 

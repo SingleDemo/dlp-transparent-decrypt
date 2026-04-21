@@ -46,21 +46,31 @@ def is_encrypted(src: str) -> bool:
         return False
 
 
-def detect_encoding(src: str) -> str:
-    """检测文件编码"""
+def detect_encoding(src: str, is_source_file: bool = False) -> str:
+    """
+    检测文件编码。
+
+    对于 Keil 嵌入式源文件（.c/.h/.s/.inc），优先尝试 GBK：
+    Keil MDK 默认用 GBK 保存中文注释，启发式判断会误判为 UTF-8
+    导致解密后中文乱码。
+    """
     try:
         with open(src, 'rb') as f:
             raw = f.read(4096)
 
-        # UTF-8 BOM
         if raw.startswith(b'\xef\xbb\xbf'):
             return 'utf-8-sig'
 
-        # 估算可打印字符比例
-        printable = sum(1 for b in raw
-                       if 32 <= b < 127 or b in (9, 10, 13))
-        ratio = printable / max(len(raw), 1)
+        if is_source_file:
+            # 嵌入式源文件：检查是否有 GBK 中文特征（双字节 0x80-0xFF）
+            has_gbk = any(0x80 <= b <= 0xFF for b in raw[:200])
+            if has_gbk:
+                return 'gbk'
+            return 'utf-8'
 
+        # 通用启发式
+        printable = sum(1 for b in raw if 32 <= b < 127 or b in (9, 10, 13))
+        ratio = printable / max(len(raw), 1)
         if ratio > 0.85:
             for enc in ('utf-8', 'gbk', 'gb2312'):
                 try:
@@ -68,7 +78,6 @@ def detect_encoding(src: str) -> str:
                     return enc
                 except Exception:
                     pass
-
         return 'utf-8'
     except Exception:
         return 'utf-8'
@@ -77,6 +86,8 @@ def detect_encoding(src: str) -> str:
 # ======================================================================
 #  方式A：cmd type 重定向（推荐，120x faster）
 # ======================================================================
+
+SOURCE_EXTS = {'.c', '.h', '.s', '.inc', '.a', '.lib', '.obj'}
 
 def read_via_cmd_type(src: str, timeout: float = 10.0) -> Optional[str]:
     """
@@ -88,6 +99,7 @@ def read_via_cmd_type(src: str, timeout: float = 10.0) -> Optional[str]:
     参数列表形式 ['cmd', '/c', 'type', src, '>', dst] 保证了
     中文字符路径正确传递给 CMD 进程。
     """
+    is_src = os.path.splitext(src)[1].lower() in SOURCE_EXTS
     fd, tmp = tempfile.mkstemp(suffix='.txt')
     os.close(fd)
 
@@ -102,7 +114,7 @@ def read_via_cmd_type(src: str, timeout: float = 10.0) -> Optional[str]:
         )
 
         if r.returncode == 0 and os.path.exists(tmp) and not is_encrypted(tmp):
-            enc = detect_encoding(tmp)
+            enc = detect_encoding(tmp, is_source_file=is_src)
             with open(tmp, encoding=enc, errors='replace') as f:
                 return f.read()
         return None
@@ -394,7 +406,8 @@ def main():
         sys.stdout.buffer.write(text.encode('utf-8'))
     elif dest:
         os.makedirs(os.path.dirname(os.path.abspath(dest)) or '.', exist_ok=True)
-        with open(dest, 'w', encoding='utf-8') as f:
+        # 写 UTF-8-BOM：Keil 5.29+ 和 VSCode 都能自动识别
+        with open(dest, 'w', encoding='utf-8-sig', newline='\n') as f:
             f.write(text)
         print(f"Written: {dest} ({len(text)} chars)", file=sys.stderr)
     else:
