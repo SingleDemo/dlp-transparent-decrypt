@@ -175,7 +175,28 @@ for path, (ok, content_or_err) in results.items():
 
 ### 5.2 中文编码
 
-Keil MDK 默认以 **GBK** 保存 `.c/.h` 文件，`cmd type` 输出的内容是 GBK 编码。`detect_encoding()` 会自动检测 GBK 特征并正确解码。解密后统一写 **UTF-8-BOM**，Keil 5.29+ 和 VSCode 都能自动识别。
+`cmd type` 输出的文件可能无 BOM，编码不确定（UTF-8 或 GBK）。`detect_encoding()` 的修复逻辑（2026-04-22）：
+
+1. 有 UTF-8 BOM → `utf-8-sig`
+2. 无 BOM：尝试 UTF-8 → 成功则返回
+3. UTF-8 失败：尝试 GBK → 成功则返回
+4. 两者都成功：按 Latin-1 高位字节比例判断（>15% → GBK，<15% → UTF-8）
+
+解密后统一写 **UTF-8-BOM**，Keil 5.29+ 和 VSCode 都能自动识别。
+
+**重要**：Git 仓库中存储的文件可能是 DLP 加密状态（如 `git show` 输出 `BOM: 62 14 23`）。
+如需解密 Git 中的文件，先提取到 DLP 监控目录，再用 `cmd type` 透明解密：
+
+```python
+import subprocess, os
+r = subprocess.run(['git', 'show', 'COMMIT:path/to/file.c'], capture_output=True)
+git_enc = r.stdout
+tmp = os.path.join('DLP监控目录', '__tmp_decrypt.c')
+with open(tmp, 'wb') as f: f.write(git_enc)
+plain = subprocess.run(['cmd', '/c', 'type', tmp], capture_output=True).stdout
+os.remove(tmp)
+# plain 已是解密内容，再按 UTF-8-BOM 写入目标位置
+```
 
 ### 5.3 常见问题
 

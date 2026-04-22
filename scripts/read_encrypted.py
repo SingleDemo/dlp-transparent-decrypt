@@ -50,9 +50,10 @@ def detect_encoding(src: str, is_source_file: bool = False) -> str:
     """
     检测文件编码。
 
-    对于 Keil 嵌入式源文件（.c/.h/.s/.inc），优先尝试 GBK：
-    Keil MDK 默认用 GBK 保存中文注释，启发式判断会误判为 UTF-8
-    导致解密后中文乱码。
+    修复历史（2026-04-22）：
+    - 原始启发式对无 BOM 文件误判率高
+    - DLP 解密后文件可能无 BOM，编码可能是 UTF-8 或 GBK
+    - 新策略：混合尝试 UTF-8 -> GBK，优先选择乱码少的结果
     """
     try:
         with open(src, 'rb') as f:
@@ -61,24 +62,38 @@ def detect_encoding(src: str, is_source_file: bool = False) -> str:
         if raw.startswith(b'\xef\xbb\xbf'):
             return 'utf-8-sig'
 
-        if is_source_file:
-            # 嵌入式源文件：检查是否有 GBK 中文特征（双字节 0x80-0xFF）
-            has_gbk = any(0x80 <= b <= 0xFF for b in raw[:200])
-            if has_gbk:
-                return 'gbk'
+        # 统计 Latin-1 范围字节比例（GBK 双字节汉字高位字节 0x81-0xFE 常见）
+        latin1_bytes = sum(1 for b in raw if b >= 0x80)
+        latin1_ratio = latin1_bytes / max(len(raw), 1)
+
+        # 策略1：优先 UTF-8
+        utf8_ok = False
+        try:
+            raw.decode('utf-8')
+            utf8_ok = True
+        except Exception:
+            pass
+
+        # 策略2：GBK（嵌入式源文件或高 Latin-1 比例）
+        gbk_ok = False
+        try:
+            raw.decode('gbk')
+            gbk_ok = True
+        except Exception:
+            pass
+
+        # 决策树
+        if utf8_ok and gbk_ok:
+            # 两者都合法：Latin-1 比例高 -> GBK；低 -> UTF-8
+            return 'gbk' if latin1_ratio > 0.15 else 'utf-8'
+        elif utf8_ok:
+            return 'utf-8'
+        elif gbk_ok:
+            return 'gbk'
+        else:
+            # 都失败：返回第一个尝试的
             return 'utf-8'
 
-        # 通用启发式
-        printable = sum(1 for b in raw if 32 <= b < 127 or b in (9, 10, 13))
-        ratio = printable / max(len(raw), 1)
-        if ratio > 0.85:
-            for enc in ('utf-8', 'gbk', 'gb2312'):
-                try:
-                    raw.decode(enc)
-                    return enc
-                except Exception:
-                    pass
-        return 'utf-8'
     except Exception:
         return 'utf-8'
 
