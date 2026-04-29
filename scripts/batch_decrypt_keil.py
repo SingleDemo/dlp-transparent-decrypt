@@ -62,8 +62,12 @@ def inplace_decrypt(project_dir: str, extensions: list, workers: int = 4) -> dic
             try:
                 with open(fp, 'rb') as f:
                     header = f.read(8)
-                if len(header) >= 4 and header[0] == 0x62 and header[1] == 0x14 and header[2] == 0x23:
-                    files_to_decrypt.append(fp)
+                # 检测 DLP 加密头：支持多种变体 (62/77/efbbbf+62 等)
+                if len(header) >= 4:
+                    # 跳过 UTF-8 BOM 后检查加密头
+                    check = header[3:] if header[:3] == b'\xef\xbb\xbf' else header
+                    if check[0] in (0x62, 0x77) and check[1] == 0x14 and check[2] == 0x23:
+                        files_to_decrypt.append(fp)
             except Exception:
                 pass
 
@@ -75,14 +79,22 @@ def inplace_decrypt(project_dir: str, extensions: list, workers: int = 4) -> dic
 
     def decrypt_one(fp):
         try:
-            text = read_encrypted_file(fp)
-            # 写回原文件（UTF-8-BOM）
+            text, enc = read_encrypted_file(fp)
+            # 根据检测到的原始编码写回文件
+            # utf-8-sig: 带 BOM 的 UTF-8
+            # utf-8: 无 BOM 的 UTF-8
+            # gbk: GBK/GB2312 编码（Keil 默认）
             with open(fp, 'wb') as f:
-                f.write(b'\xef\xbb\xbf')
-                f.write(text.encode('utf-8'))
-            return (True, fp, len(text))
+                if enc == 'utf-8-sig':
+                    f.write(b'\xef\xbb\xbf')
+                    f.write(text.encode('utf-8'))
+                elif enc == 'gbk':
+                    f.write(text.encode('gbk'))
+                else:
+                    f.write(text.encode('utf-8'))
+            return (True, fp, len(text), enc)
         except Exception as e:
-            return (False, fp, str(e))
+            return (False, fp, str(e), '')
 
     results = {"success": [], "failed": [], "skipped": []}
     t0 = time.time()
@@ -92,7 +104,7 @@ def inplace_decrypt(project_dir: str, extensions: list, workers: int = 4) -> dic
         done = 0
         for future in as_completed(futures):
             done += 1
-            ok, fp, data = future.result()
+            ok, fp, data, enc = future.result()
             if ok:
                 results["success"].append(fp)
                 if done % 20 == 0:
@@ -199,14 +211,16 @@ def copy_decrypt(src_dir: str, dst_dir: str, extensions: list,
         total_chars = 0
         failed_list = []
 
-        for src_path, (success, data) in batch_results.items():
+        for src_path, (success, data, enc) in batch_results.items():
             rel = os.path.relpath(src_path, src_dir)
             out_path = os.path.join(dst_dir, rel)
 
             if success:
                 try:
                     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                    with open(out_path, "w", encoding="utf-8-sig", newline="\n") as f:
+                    # 根据检测到的原始编码写入副本
+                    write_enc = 'utf-8-sig' if enc == 'utf-8-sig' else ('gbk' if enc == 'gbk' else 'utf-8')
+                    with open(out_path, "w", encoding=write_enc, newline="\n") as f:
                         f.write(data)
                     total_chars += len(data)
                     ok += 1
@@ -219,7 +233,7 @@ def copy_decrypt(src_dir: str, dst_dir: str, extensions: list,
                 failed_list.append((src_path, data))
                 fail += 1
 
-        results["success"] = [p for p, (ok, _) in [(s, batch_results[s]) for s in batch_results] if ok]
+        results["success"] = [p for p, (suc, _, _) in [(s, batch_results[s]) for s in batch_results] if suc]
         results["failed"] = failed_list
 
         elapsed = time.time() - t0

@@ -112,7 +112,7 @@ def detect_encoding(src: str, is_source_file: bool = False) -> str:
 
 SOURCE_EXTS = {'.c', '.h', '.s', '.inc', '.a', '.lib', '.obj'}
 
-def read_via_cmd_type(src: str, timeout: float = 10.0) -> Optional[str]:
+def read_via_cmd_type(src: str, timeout: float = 10.0) -> Optional[Tuple[str, str]]:
     """
     通过 cmd.exe type 重定向读取 DLP 加密文件。
 
@@ -121,6 +121,9 @@ def read_via_cmd_type(src: str, timeout: float = 10.0) -> Optional[str]:
 
     参数列表形式 ['cmd', '/c', 'type', src, '>', dst] 保证了
     中文字符路径正确传递给 CMD 进程。
+
+    Returns:
+        (text, encoding) 或 None
     """
     is_src = os.path.splitext(src)[1].lower() in SOURCE_EXTS
     fd, tmp = tempfile.mkstemp(suffix='.txt')
@@ -139,7 +142,7 @@ def read_via_cmd_type(src: str, timeout: float = 10.0) -> Optional[str]:
         if r.returncode == 0 and os.path.exists(tmp) and not is_encrypted(tmp):
             enc = detect_encoding(tmp, is_source_file=is_src)
             with open(tmp, encoding=enc, errors='replace') as f:
-                return f.read()
+                return f.read(), enc
         return None
 
     except Exception:
@@ -305,15 +308,19 @@ def read_via_notepad(src: str, timeout: float = 12.0) -> Optional[str]:
 #  主入口
 # ======================================================================
 
-def read_encrypted_file(src: str, use_fast: bool = True) -> str:
+def read_encrypted_file(src: str, use_fast: bool = True) -> Tuple[str, str]:
     """
-    读取 DLP 透明加密文件，返回明文字符串。
+    读取 DLP 透明加密文件，返回 (明文字符串, 原始编码)。
 
     工作流程:
       1. 非加密文件 → 直接读取
       2. 加密文件   → cmd type 重定向（快）
       3. cmd 失败   → notepad + WM_GETTEXT（回退）
       4. 全失败     → 抛出 RuntimeError
+
+    Returns:
+        (text, encoding): text 为 Unicode 字符串，encoding 为检测到的原始编码
+                          ('utf-8', 'utf-8-sig', 'gbk' 等)
 
     Raises:
         FileNotFoundError: 文件不存在
@@ -327,18 +334,25 @@ def read_encrypted_file(src: str, use_fast: bool = True) -> str:
     if not is_encrypted(src):
         enc = detect_encoding(src)
         with open(src, encoding=enc, errors='replace') as f:
-            return f.read()
+            return f.read(), enc
 
     # 加密文件：优先 cmd type
     if use_fast:
-        text = read_via_cmd_type(src)
-        if text is not None and len(text) > 10:
-            return text
+        result = read_via_cmd_type(src)
+        if result is not None:
+            text, enc = result
+            if len(text) > 10:
+                return text, enc
 
     # 回退：notepad + WM_GETTEXT
     text = read_via_notepad(src)
     if text is not None and len(text) > 10:
-        return text
+        # notepad 回退无法确定原始编码，尝试检测
+        try:
+            text.encode('utf-8')
+            return text, 'utf-8'
+        except Exception:
+            return text, 'gbk'
 
     raise RuntimeError(f"All methods failed for: {src}")
 
@@ -355,13 +369,15 @@ def batch_read(files: List[str],
         timeout_per_file: 单文件超时（秒）
 
     Returns:
-        dict: {src_path: (success: bool, content_or_error: str)}
+        dict: {src_path: (success: bool, content_or_error: str, encoding: str)}
+               encoding 仅在 success=True 时有效，失败时为空字符串
     """
     def worker(path):
         try:
-            return (True, read_encrypted_file(path))
+            text, enc = read_encrypted_file(path)
+            return (True, text, enc)
         except Exception as e:
-            return (False, str(e))
+            return (False, str(e), '')
 
     results = {}
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -371,7 +387,7 @@ def batch_read(files: List[str],
             try:
                 results[path] = future.result()
             except Exception as e:
-                results[path] = (False, str(e))
+                results[path] = (False, str(e), '')
 
     return results
 

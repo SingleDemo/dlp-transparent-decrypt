@@ -121,16 +121,20 @@ def decrypt_file_inplace(filepath: str, verbose: bool = True) -> Tuple[bool, str
         except Exception:
             text = decrypted_bytes.decode(encoding, errors='replace')
         
-        # 写回原文件（UTF-8-BOM）
+        # 写回原文件（保持原始编码）
         with open(filepath, 'wb') as f:
-            # BOM
-            f.write(b'\xef\xbb\xbf')
-            # UTF-8 内容
-            f.write(text.encode('utf-8'))
-        
+            if encoding == 'utf-8-sig':
+                f.write(b'\xef\xbb\xbf')
+                f.write(text.encode('utf-8'))
+            elif encoding == 'gbk':
+                f.write(text.encode('gbk'))
+            else:
+                f.write(text.encode('utf-8'))
+
+        out_enc = 'gbk' if encoding == 'gbk' else ('utf-8-bom' if encoding == 'utf-8-sig' else 'utf-8')
         if verbose:
-            print(f"[OK] {filepath} ({len(text)} chars, {encoding} -> utf-8-bom)")
-        
+            print(f"[OK] {filepath} ({len(text)} chars, {encoding} -> {out_enc})")
+
         return (True, f"解密成功，{len(text)} 字符")
     
     except subprocess.TimeoutExpired:
