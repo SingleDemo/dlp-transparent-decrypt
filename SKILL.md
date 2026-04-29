@@ -183,7 +183,12 @@ for path, (ok, content_or_err) in results.items():
 3. UTF-8 失败：尝试 GBK → 成功则返回
 4. 两者都成功：按 Latin-1 高位字节比例判断（>15% → GBK，<15% → UTF-8）
 
-解密后统一写 **UTF-8-BOM**，Keil 5.29+ 和 VSCode 都能自动识别。
+**解密后保持原始编码**（2026-04-29 更新）：
+- 检测到 **GBK** → 写回 **GBK/GB2312**（Keil 默认编码，无需转换）
+- 检测到 **utf-8-sig** → 写回 **UTF-8-BOM**
+- 检测到 **utf-8** → 写回 **UTF-8**（无 BOM）
+
+这样 Keil 工程可以直接编译，不需要手动改编码设置。
 
 **重要**：Git 仓库中存储的文件可能是 DLP 加密状态（如 `git show` 输出 `BOM: 62 14 23`）。
 如需解密 Git 中的文件，先提取到 DLP 监控目录，再用 `cmd type` 透明解密：
@@ -196,7 +201,7 @@ tmp = os.path.join('DLP监控目录', '__tmp_decrypt.c')
 with open(tmp, 'wb') as f: f.write(git_enc)
 plain = subprocess.run(['cmd', '/c', 'type', tmp], capture_output=True).stdout
 os.remove(tmp)
-# plain 已是解密内容，再按 UTF-8-BOM 写入目标位置
+# plain 已是解密内容，再按原始编码写入目标位置
 ```
 
 ### 5.3 常见问题
@@ -215,6 +220,6 @@ os.remove(tmp)
 ```powershell
 cd C:\Users\liuxiao\.workbuddy\skills\dlp-transparent-decrypt
 git add .
-git commit -m "fix: detect small encrypted files via magic bytes (0x62/0x77 + 0x14 + 0x23)"
+git commit -m "feat: preserve original encoding (GBK/GB2312) after decryption"
 git push origin master
 ```
