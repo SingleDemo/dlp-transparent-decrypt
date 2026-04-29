@@ -172,6 +172,7 @@ for path, (ok, content_or_err) in results.items():
 3. **中文路径没问题**：列表参数形式正确传递给 CMD
 4. **跳过 OBJ/Listings**：编译产物不解密不复制
 5. **DLP 服务必须运行**：`EstDlpSEDataBase.exe` 等进程需正常启动
+6. **小文件加密检测**：极小的加密文件（<~200B）可能不包含 `"E-SafeNet"` 字符串，检测需同时匹配 magic bytes（`0x62`/`0x77` + `0x14` + `0x23`），否则会被误判为明文，写入乱码后损坏（详见 5.3）
 
 ### 5.2 中文编码
 
@@ -205,14 +206,15 @@ os.remove(tmp)
 | 成功率不是 100% | 检查 DLP 服务是否正常 |
 | 解密后中文注释乱码 | GBK→UTF-8-BOM 自动处理，重新解密即可 |
 | 只加密了部分文件 | 原地解密只处理加密文件，未加密的跳过 |
+| **小文件解密损坏**（如 SysMeasure.h 159B） | `is_encrypted()` 在 2026-04-29 修复：同时检测 `"E-SafeNet"` 字符串和 magic bytes（`0x62`/`0x77` + `0x14` + `0x23`）。仅依赖字符串检测会导致小文件被误判为明文，读到加密乱码后写入，被 DLP 重新加密为无法恢复的损坏格式 |
 
 ---
 
 ## 六、GitHub 同步
 
 ```powershell
-cd C:\Users\liuxiao\.qclaw\workspace\dlp-transparent-decrypt
+cd C:\Users\liuxiao\.workbuddy\skills\dlp-transparent-decrypt
 git add .
-git commit -m "feat: v3 - in-place decrypt as default, --copy for backup"
+git commit -m "fix: detect small encrypted files via magic bytes (0x62/0x77 + 0x14 + 0x23)"
 git push origin master
 ```

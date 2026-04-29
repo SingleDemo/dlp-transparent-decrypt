@@ -38,10 +38,18 @@ user32 = ctypes.windll.user32
 # ======================================================================
 
 def is_encrypted(src: str) -> bool:
-    """检测文件是否为 DLP 加密格式（E-SafeNet 头）"""
+    """检测文件是否为 DLP 加密格式（E-SafeNet 头 或 magic bytes）"""
     try:
         with open(src, 'rb') as f:
-            return b'E-SafeNet' in f.read(128)
+            header = f.read(128)
+        # 检查 E-SafeNet / LOCK 字符串（大文件通常包含）
+        if b'E-SafeNet' in header or b'LOCK' in header:
+            return True
+        # 检查 magic bytes（小文件可能没有 E-SafeNet 字符串）
+        check = header[3:] if header[:3] == b'\xef\xbb\xbf' else header
+        if len(check) >= 4 and check[0] in (0x62, 0x77) and check[1] == 0x14 and check[2] == 0x23:
+            return True
+        return False
     except Exception:
         return False
 
