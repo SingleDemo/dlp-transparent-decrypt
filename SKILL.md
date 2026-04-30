@@ -1,0 +1,271 @@
+# DLP 透明解密 v4
+
+> 适用于亿赛通 Cobra DocGuard Client (EsafeNet) 透明加密文件的快速解密。
+> 速度：~0.025s/文件，比 notepad+WM_GETTEXT 快 **120倍**。
+> 
+> **v4 安全更新**：原地解密自动备份 + 解密后验证 + 失败自动恢复 + 完成后询问清理备份。
+
+## 文件结构
+
+```
+dlp-transparent-decrypt/
+├─ SKILL.md
+└─ scripts/
+   ├─ read_encrypted.py       ← 核心库（单文件读取 / Python API）
+   ├─ batch_decrypt_keil.py   ← 工程解密（默认原地解密，--copy 生成副本）
+   └─ inplace_decrypt.py      ← 原地解密 CLI 工具（batch_decrypt_keil.py 的子集）
+```
+
+---
+
+## 一、快速上手
+
+### 1.1 工程解密（默认原地解密）
+
+适用场景：解密后的工程放在 DLP 监控目录下，修改后被重新加密，直接原地解密。
+
+```powershell
+# 原地解密整个工程（默认行为：自动备份 → 解密 → 验证 → 询问清理）
+python scripts\batch_decrypt_keil.py "D:\M10-Decrypted\ZR-M10-源APP"
+
+# 生成解密副本（仅当需要副本时才用，不涉及覆盖，不备份）
+python scripts\batch_decrypt_keil.py "D:\刘笑\5216" --copy "D:\5216-Decrypted"
+```
+
+### 1.2 单文件解密
+
+适用场景：只需要读取或解密某一个加密文件。
+
+```powershell
+# 解密单个文件，输出到指定路径
+python scripts\read_encrypted.py "D:\项目\file.c" "C:\Temp\file_decrypted.c"
+
+# 输出到 stdout
+python scripts\read_encrypted.py "D:\项目\file.c" --
+
+# 批量模式
+python scripts\read_encrypted.py --batch "file1.c" "file2.h"
+```
+
+---
+
+## 二、batch_decrypt_keil.py 详解
+
+### 2.1 默认行为：原地解密（自动备份 + 验证 + 恢复）
+
+```powershell
+# 原地解密整个工程（自动备份、验证、失败恢复）
+python scripts\batch_decrypt_keil.py "D:\M10-Decrypted\ZR-M10"
+
+# 只解密 .c/.h/.s 源文件
+python scripts\batch_decrypt_keil.py "D:\M10" --ext .c .h .s .inc
+
+# 跳过备份（不推荐，除非确定无风险）
+python scripts\batch_decrypt_keil.py "D:\M10" --no-backup
+```
+
+**工作流程**（v4 新增安全流程）：
+1. **备份**：将所有待解密文件复制到 `.dlp-backup/YYYYMMDD_HHMMSS/`
+2. **扫描**：检测 DLP 加密头（`0x62 0x14 0x23 0x65`）
+3. **解密**：`cmd type` 透明解密 → 按原始编码写回
+4. **验证**：检查文件大小>0、非加密状态、内容可读
+5. **恢复重试**：验证失败的文件从备份恢复后二次解密
+6. **清理**：询问用户是否删除备份（保留用于对比/回滚）
+
+> ⚠️ **重要**：原地解密前**必须备份**。上次解密中 `to_gb2312_all.py` 脚本曾导致 21 个文件损坏为 0 字节，备份是最后的防线。
+
+### 2.2 生成副本模式：--copy
+
+适用场景：第一次解密，把加密的源工程复制一份到新目录解密，保留原始加密工程不变。
+
+```powershell
+# 副本模式（加密源 -> 解密副本）
+python scripts\batch_decrypt_keil.py "D:\刘笑\环境部\5216" --copy "D:\5216-Decrypted"
+
+# 副本模式 + 同时复制 README/文档等非加密文件
+python scripts\batch_decrypt_keil.py "D:\5216" --copy "D:\5216-Decrypted" --copy-other
+
+# 调整线程数
+python scripts\batch_decrypt_keil.py "D:\5216" --copy "D:\out" -w 8
+```
+
+### 2.3 原地解密 vs 副本模式
+
+| | 原地解密（默认） | 副本模式（--copy） |
+|--|--|--|
+| 适用场景 | 已解密过的工程被重新加密 | 第一次解密原始加密工程 |
+| 原工程 | **被修改** | 不变 |
+| 速度 | 更快（只处理加密文件） | 稍慢（全量解密+复制） |
+| 输出目录 | 即输入目录 | 由 --copy 指定 |
+
+### 2.4 原地解密输出示例（v4 带备份验证）
+
+```
+工程目录: D:\M10-Decrypted\ZR-M10
+模式: 原地解密（自动备份 + 验证 + 恢复）
+扩展名: ['.c', '.h']
+
+发现 157 个加密文件
+
+[备份] 正在备份 157 个源文件到 .dlp-backup/20260430_143052/ ...
+[备份] 完成: 157/157 个文件已备份
+[备份] 路径: D:\M10-Decrypted\ZR-M10\.dlp-backup\20260430_143052
+
+开始首次解密（4 线程）...
+  已解密 20/157...
+  已解密 40/157...
+
+首次解密完成: 155/157 成功, 2 失败, 3.52s
+
+[验证] 正在检查 155 个解密后的文件...
+[验证] 通过: 155, 失败: 0
+
+[备份清理] 解密已完成，备份文件保存在:
+  D:\M10-Decrypted\ZR-M10\.dlp-backup\20260430_143052
+
+请选择:
+  1. 保留备份（用于对比或回滚）
+  2. 删除备份（释放空间）
+
+输入 1 或 2: 1
+[备份清理] 已保留备份: D:\M10-Decrypted\ZR-M10\.dlp-backup\20260430_143052
+```
+
+---
+
+## 三、核心原理
+
+亿赛通 DLP 对 `cmd.exe` 有白名单放行逻辑：
+```
+cmd /c type <加密文件> > <明文输出>
+```
+DLP 自动透明解密内容，通过 CMD 重定向写出。`cmd type` 输出的是解密后的明文，再用 UTF-8-BOM 写回原文件。
+
+### 3.1 方案对比
+
+| 方案 | 速度 | 成功率 | 窗口弹出 | 备注 |
+|------|------|--------|----------|------|
+| **cmd type 重定向** | **7ms/文件** | **100%** | **无** | ✅ 推荐 |
+| notepad+WM_GETTEXT | ~3000ms/文件 | ~95% | 有 | 备选/回退 |
+
+### 3.2 为何其他方案失败
+
+| 方案 | 失败原因 |
+|------|----------|
+| `copy` 命令 | subprocess 列表参数编码无法处理中文路径 |
+| PowerShell Get-Content | 走 .NET 内部路径，不触发 DLP 透明解密钩子 |
+| Python `open()` 直接读 | 同样不触发 DLP 钩子，读到加密内容 |
+| cmd `type` stdout 捕获 | console device 无法被 Python 管道捕获 |
+
+---
+
+## 四、Python API
+
+```python
+import sys
+sys.path.insert(0, r"C:\Users\liuxiao\.qclaw\workspace\dlp-transparent-decrypt\scripts")
+from read_encrypted import read_encrypted_file, batch_read
+
+# 单文件（自动检测加密并解密）
+text = read_encrypted_file(r"D:\项目\SysMeasure.c")
+
+# 批量并行（4线程）
+results = batch_read([
+    r"D:\项目\file1.c",
+    r"D:\项目\file2.h",
+    r"D:\项目\file3.c",
+], max_workers=4)
+
+for path, (ok, content_or_err) in results.items():
+    if ok:
+        print(f"OK: {path} ({len(content_or_err)} chars)")
+    else:
+        print(f"FAIL: {path} - {content_or_err}")
+```
+
+---
+
+## 五、经验总结
+
+### 5.1 关键经验
+
+1. **DLP 非监控区写文件才会解密**：输出到 `D:\M10-Decrypted`（非 DLP 监控）才能正确解密
+2. **原地解密直接覆盖**：默认模式直接写回原目录，对已在非监控区的解密工程来说没问题
+3. **中文路径没问题**：列表参数形式正确传递给 CMD
+4. **跳过 OBJ/Listings**：编译产物不解密不复制
+5. **DLP 服务必须运行**：`EstDlpSEDataBase.exe` 等进程需正常启动
+6. **小文件加密检测**：极小的加密文件（<~200B）可能不包含 `"E-SafeNet"` 字符串，检测需同时匹配 magic bytes（`0x62`/`0x77` + `0x14` + `0x23`），否则会被误判为明文，写入乱码后损坏（详见 5.3）
+
+### 5.2 中文编码
+
+`cmd type` 输出的文件可能无 BOM，编码不确定（UTF-8 或 GBK）。`detect_encoding()` 的修复逻辑（2026-04-22）：
+
+1. 有 UTF-8 BOM → `utf-8-sig`
+2. 无 BOM：尝试 UTF-8 → 成功则返回
+3. UTF-8 失败：尝试 GBK → 成功则返回
+4. 两者都成功：按 Latin-1 高位字节比例判断（>15% → GBK，<15% → UTF-8）
+
+**解密后保持原始编码**（2026-04-29 更新）：
+- 检测到 **GBK** → 写回 **GBK/GB2312**（Keil 默认编码，无需转换）
+- 检测到 **utf-8-sig** → 写回 **UTF-8-BOM**
+- 检测到 **utf-8** → 写回 **UTF-8**（无 BOM）
+
+这样 Keil 工程可以直接编译，不需要手动改编码设置。
+
+**重要**：Git 仓库中存储的文件可能是 DLP 加密状态（如 `git show` 输出 `BOM: 62 14 23`）。
+如需解密 Git 中的文件，先提取到 DLP 监控目录，再用 `cmd type` 透明解密：
+
+```python
+import subprocess, os
+r = subprocess.run(['git', 'show', 'COMMIT:path/to/file.c'], capture_output=True)
+git_enc = r.stdout
+tmp = os.path.join('DLP监控目录', '__tmp_decrypt.c')
+with open(tmp, 'wb') as f: f.write(git_enc)
+plain = subprocess.run(['cmd', '/c', 'type', tmp], capture_output=True).stdout
+os.remove(tmp)
+# plain 已是解密内容，再按原始编码写入目标位置
+```
+
+### 5.3 常见问题
+
+| 问题 | 解决 |
+|------|------|
+| 成功率不是 100% | 检查 DLP 服务是否正常 |
+| 解密后中文注释乱码 | GBK→UTF-8-BOM 自动处理，重新解密即可 |
+| 只加密了部分文件 | 原地解密只处理加密文件，未加密的跳过 |
+| **小文件解密损坏**（如 SysMeasure.h 159B） | `is_encrypted()` 在 2026-04-29 修复：同时检测 `"E-SafeNet"` 字符串和 magic bytes（`0x62`/`0x77` + `0x14` + `0x23`）。仅依赖字符串检测会导致小文件被误判为明文，读到加密乱码后写入，被 DLP 重新加密为无法恢复的损坏格式 |
+| **文件被覆盖/损坏** | v4 已增加自动备份 + 验证 + 恢复机制。备份保存在 `.dlp-backup/时间戳/`，解密失败会自动从备份恢复并重试 |
+
+### 5.4 备份机制（v4 新增）
+
+**为什么必须备份**：
+- 2026-04-29 事故：`to_gb2312_all.py` 脚本导致 21 个 `.c/.h` 文件被损坏为 0 字节
+- DLP 透明解密依赖 `cmd type` 重定向，任何编码处理错误都可能导致文件损坏
+- 备份是防止数据丢失的最后防线
+
+**备份策略**：
+- 备份路径：`<工程目录>/.dlp-backup/YYYYMMDD_HHMMSS/`
+- 只备份待解密的源文件（`.c/.h/.s/.inc` 等），不备份编译产物
+- 备份保留原始文件属性（修改时间等）
+- 解密完成后**主动询问**是否删除备份，默认保留
+
+**验证策略**：
+- 文件大小 > 0（排除 0 字节损坏）
+- 文件头部不含 DLP magic bytes（排除仍为加密状态）
+- 内容可编码读取（UTF-8 或 GBK）
+
+**恢复重试**：
+- 验证失败的文件自动从备份恢复
+- 恢复后执行二次解密
+- 二次失败则标记为最终失败，保留备份供手动处理
+
+---
+
+## 六、GitHub 同步
+
+```powershell
+cd C:\Users\liuxiao\.workbuddy\skills\dlp-transparent-decrypt
+git add .
+git commit -m "feat: preserve original encoding (GBK/GB2312) after decryption"
+git push origin master
+```
