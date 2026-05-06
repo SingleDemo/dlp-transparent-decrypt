@@ -1,9 +1,14 @@
-# DLP 透明解密 v4
+# DLP 透明解密 v4.1
 
 > 适用于亿赛通 Cobra DocGuard Client (EsafeNet) 透明加密文件的快速解密。
 > 速度：~0.025s/文件，比 notepad+WM_GETTEXT 快 **120倍**。
 > 
 > **v4 安全更新**：原地解密自动备份 + 解密后验证 + 失败自动恢复 + 完成后询问清理备份。
+>
+> **v4.1 编码修复**（2026-05-06）：
+> - 修复中文路径下 `cmd type` 重定向失败的问题（subprocess 列表参数中 `>` 不被解析）
+> - 改进编码检测逻辑，嵌入式源文件（.c/.h）优先尝试 GBK，避免 UTF-8 误判导致的中文乱码
+> - 移除静默的 `errors='replace'`，编码问题时现在会发出警告而不是默默产生锟斤拷
 
 ## 文件结构
 
@@ -198,14 +203,23 @@ for path, (ok, content_or_err) in results.items():
 
 ### 5.2 中文编码
 
-`cmd type` 输出的文件可能无 BOM，编码不确定（UTF-8 或 GBK）。`detect_encoding()` 的修复逻辑（2026-04-22）：
+`cmd type` 输出的文件可能无 BOM，编码不确定（UTF-8 或 GBK）。`detect_encoding()` 的修复逻辑：
 
+**2026-04-22 版本**：
 1. 有 UTF-8 BOM → `utf-8-sig`
 2. 无 BOM：尝试 UTF-8 → 成功则返回
 3. UTF-8 失败：尝试 GBK → 成功则返回
 4. 两者都成功：按 Latin-1 高位字节比例判断（>15% → GBK，<15% → UTF-8）
 
-**解密后保持原始编码**（2026-04-29 更新）：
+**2026-05-06 v4.1 改进**：
+- 修复中文路径下 `cmd type` 重定向失败：原实现使用 subprocess 列表参数 `['cmd', '/c', 'type', src, '>', tmp]`，
+  重定向符号 `>` 不被 CMD 解析，导致中文路径下"命令语法不正确"错误。
+  改为 `shell=True + 字符串命令` 方式：`cmd /Q /C type "src" > "tmp"`
+- 改进编码检测：嵌入式源文件（.c/.h）优先尝试 GBK，因为 Keil 工程通常使用 GBK/GB2312 编码
+- 当 UTF-8 解码产生替换字符（`\ufffd`）时，优先选择 GBK 编码
+- 移除静默的 `errors='replace'`，编码问题现在会发出警告
+
+**解密后保持原始编码**：
 - 检测到 **GBK** → 写回 **GBK/GB2312**（Keil 默认编码，无需转换）
 - 检测到 **utf-8-sig** → 写回 **UTF-8-BOM**
 - 检测到 **utf-8** → 写回 **UTF-8**（无 BOM）

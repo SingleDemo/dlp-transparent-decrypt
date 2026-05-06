@@ -58,10 +58,10 @@ def detect_encoding(src: str, is_source_file: bool = False) -> str:
     """
     检测文件编码。
 
-    修复历史（2026-04-22）：
-    - 原始启发式对无 BOM 文件误判率高
-    - DLP 解密后文件可能无 BOM，编码可能是 UTF-8 或 GBK
-    - 新策略：混合尝试 UTF-8 -> GBK，优先选择乱码少的结果
+    修复历史：
+    - 2026-04-22: 原始启发式对无 BOM 文件误判率高，新策略混合尝试 UTF-8 -> GBK
+    - 2026-05-06: 改进嵌入式源文件检测，对 .c/.h 文件优先尝试 GBK，
+      因为 Keil 工程通常使用 GBK/GB2312 编码，且 GBK 字节序列常被误判为 UTF-8
     """
     try:
         with open(src, 'rb') as f:
@@ -76,31 +76,56 @@ def detect_encoding(src: str, is_source_file: bool = False) -> str:
 
         # 策略1：优先 UTF-8
         utf8_ok = False
+        utf8_replacement_count = 0
         try:
-            raw.decode('utf-8')
+            decoded_utf8 = raw.decode('utf-8', errors='replace')
             utf8_ok = True
+            utf8_replacement_count = decoded_utf8.count('\ufffd')
         except Exception:
             pass
 
         # 策略2：GBK（嵌入式源文件或高 Latin-1 比例）
         gbk_ok = False
         try:
-            raw.decode('gbk')
+            raw.decode('gbk', errors='strict')
             gbk_ok = True
         except Exception:
             pass
 
-        # 决策树
+        # 决策树（2026-05-06 改进）
         if utf8_ok and gbk_ok:
-            # 两者都合法：Latin-1 比例高 -> GBK；低 -> UTF-8
-            return 'gbk' if latin1_ratio > 0.15 else 'utf-8'
+            # 两者都合法：
+            # 1. 如果是嵌入式源文件，优先 GBK（Keil 默认编码）
+            # 2. 如果 UTF-8 有替换字符，优先 GBK
+            # 3. Latin-1 比例高 -> GBK；低 -> UTF-8
+            if is_source_file:
+                # 嵌入式源文件：优先 GBK，除非确定是 UTF-8
+                if utf8_replacement_count > 0:
+                    return 'gbk'
+                # 即使 UTF-8 无替换字符，如果 Latin-1 比例高也更可能是 GBK
+                return 'gbk' if latin1_ratio > 0.10 else 'utf-8'
+            else:
+                # 非源文件：按 Latin-1 比例判断
+                return 'gbk' if latin1_ratio > 0.15 else 'utf-8'
         elif utf8_ok:
+            # UTF-8 可解码但 GBK 不可解码
+            # 如果有替换字符，说明 UTF-8 解码有问题，尝试 gb18030（兼容GBK的超集）
+            if utf8_replacement_count > 0:
+                try:
+                    raw.decode('gb18030')
+                    return 'gb18030'
+                except:
+                    pass
             return 'utf-8'
         elif gbk_ok:
             return 'gbk'
         else:
-            # 都失败：返回第一个尝试的
-            return 'utf-8'
+            # 都失败：尝试 gb18030 作为最后手段
+            try:
+                raw.decode('gb18030')
+                return 'gb18030'
+            except:
+                return 'utf-8'
 
     except Exception:
         return 'utf-8'
@@ -119,8 +144,11 @@ def read_via_cmd_type(src: str, timeout: float = 10.0) -> Optional[Tuple[str, st
     原理：亿赛通 DLP 对 cmd.exe 有白名单放行，
     cmd /c type 会触发 DLP 解密钩子，内容被重定向写出到临时文件。
 
-    参数列表形式 ['cmd', '/c', 'type', src, '>', dst] 保证了
-    中文字符路径正确传递给 CMD 进程。
+    修复历史（2026-05-06）：
+    - 原实现使用列表参数 ['cmd', '/c', 'type', src, '>', tmp]，
+      重定向符号 > 在 subprocess 列表参数中不被 CMD 解析，导致中文路径下失败
+    - 新实现使用 shell=True + 字符串命令，确保重定向正确解析
+    - 同时改进编码检测，对嵌入式源文件优先尝试 GBK
 
     Returns:
         (text, encoding) 或 None
@@ -133,16 +161,37 @@ def read_via_cmd_type(src: str, timeout: float = 10.0) -> Optional[Tuple[str, st
         if os.path.exists(tmp):
             os.remove(tmp)
 
+        # 使用 shell=True + 字符串命令，确保重定向符号 > 被正确解析
+        # 路径用双引号包裹，处理中文和空格
+        cmd_str = f'cmd /Q /C type "{src}" > "{tmp}"'
         r = subprocess.run(
-            ['cmd', '/c', 'type', src, '>', tmp],
+            cmd_str,
+            shell=True,
             capture_output=True,
             timeout=timeout
         )
 
         if r.returncode == 0 and os.path.exists(tmp) and not is_encrypted(tmp):
             enc = detect_encoding(tmp, is_source_file=is_src)
-            with open(tmp, encoding=enc, errors='replace') as f:
-                return f.read(), enc
+            # 使用 errors='strict' 暴露编码问题，而不是用 'replace' 掩盖
+            try:
+                with open(tmp, encoding=enc, errors='strict') as f:
+                    return f.read(), enc
+            except UnicodeDecodeError:
+                # 如果 strict 失败，尝试用备用编码
+                fallback_enc = 'gbk' if enc == 'utf-8' else 'utf-8'
+                try:
+                    with open(tmp, encoding=fallback_enc, errors='strict') as f:
+                        return f.read(), fallback_enc
+                except UnicodeDecodeError:
+                    # 最后尝试用 replace 但不静默失败
+                    with open(tmp, encoding=enc, errors='replace') as f:
+                        text = f.read()
+                        # 检查是否有替换字符，如果有则警告
+                        if '\ufffd' in text:
+                            print(f"[警告] 文件 {os.path.basename(src)} 解码时出现乱码，"
+                                  f"检测到编码 {enc} 可能有误")
+                        return text, enc
         return None
 
     except Exception:
