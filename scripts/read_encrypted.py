@@ -47,8 +47,14 @@ def is_encrypted(src: str) -> bool:
             return True
         # 检查 magic bytes（小文件可能没有 E-SafeNet 字符串）
         check = header[3:] if header[:3] == b'\xef\xbb\xbf' else header
-        if len(check) >= 4 and check[0] in (0x62, 0x77) and check[1] == 0x14 and check[2] == 0x23:
-            return True
+        if len(check) >= 4:
+            # 旧版 DLP 加密头：62 14 23 / 77 14 23
+            if check[0] in (0x62, 0x77) and check[1] == 0x14 and check[2] == 0x23:
+                return True
+            # 新版 DLP 加密头（2026-05 升级）：E0 A8 91 E7 D8 F2 05 AC
+            if (check[0] == 0xE0 and check[1] == 0xA8 and
+                check[2] == 0x91 and check[3] == 0xE7):
+                return True
         return False
     except Exception:
         return False

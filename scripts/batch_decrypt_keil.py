@@ -136,8 +136,12 @@ def verify_decrypted_file(fp: str, original_size: int = None) -> tuple[bool, str
         # 跳过 UTF-8 BOM 后检查
         check = header[3:] if header[:3] == b'\xef\xbb\xbf' else header
         if len(check) >= 4:
+            # 旧版 DLP 加密头：62/77 14 23
             if check[0] in (0x62, 0x77) and check[1] == 0x14 and check[2] == 0x23:
                 return False, "文件仍为加密状态（DLP头未消除）"
+            # 新版 DLP 加密头（2026-05 升级）：E0 A8 91 E7
+            if check[0] == 0xE0 and check[1] == 0xA8 and check[2] == 0x91 and check[3] == 0xE7:
+                return False, "文件仍为加密状态（新版DLP头未消除）"
         
         # 检查3：内容可读性（快速检查）
         # 尝试用 UTF-8 或 GBK 读取前 1KB
@@ -211,10 +215,14 @@ def inplace_decrypt(project_dir: str, extensions: list, workers: int = 4) -> dic
             try:
                 with open(fp, 'rb') as f:
                     header = f.read(8)
-                # 检测 DLP 加密头：支持多种变体 (62/77/efbbbf+62 等)
+                # 检测 DLP 加密头：支持多种变体
+                # 旧版: 62/77 14 23
+                # 新版: E0 A8 91 E7 (2026-05 DLP升级后)
                 if len(header) >= 4:
                     check = header[3:] if header[:3] == b'\xef\xbb\xbf' else header
-                    if check[0] in (0x62, 0x77) and check[1] == 0x14 and check[2] == 0x23:
+                    is_old_dlp = check[0] in (0x62, 0x77) and check[1] == 0x14 and check[2] == 0x23
+                    is_new_dlp = len(check) >= 4 and check[0] == 0xE0 and check[1] == 0xA8 and check[2] == 0x91 and check[3] == 0xE7
+                    if is_old_dlp or is_new_dlp:
                         files_to_decrypt.append(fp)
             except Exception:
                 pass
